@@ -1,43 +1,64 @@
-from PIL import Image
+"""Convert images into character-based art."""
 
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TypeAlias
+
+from PIL import Image, ImageOps
+
+ImageSource: TypeAlias = Image.Image | str | Path
 DEFAULT_CHARSET = "@%#*+=-:. "
 
-def resize_image(image: Image.Image, width: int) -> Image.Image:
-    "Resize image while preserving aspect ratio. Terminal characters are usually taller than they are wide, therefore the height is caled by approximately 0.5"
-    original_width, original_height = image.size
 
-    aspect_ratio = original_height / original_width
-    height = max(1, int(width * aspect_ratio * 0.5))
+def image_to_ascii(
+    image: ImageSource,
+    width: int = 100,
+    charset: str = DEFAULT_CHARSET,
+    *,
+    aspect_ratio: float = 0.5,
+    mode: str = "grayscale",
+) -> str:
+    """Convert an image or image path to ASCII text.
 
-    return image.resize((width, height))
+    ``aspect_ratio`` compensates for terminal characters being taller than
+    they are wide. ``mode`` can be ``grayscale`` or ``color``; color output
+    is represented by ANSI true-color escape sequences.
+    """
+    if width < 1:
+        raise ValueError("width must be at least 1")
+    if not charset:
+        raise ValueError("charset must contain at least one character")
+    if aspect_ratio <= 0:
+        raise ValueError("aspect_ratio must be greater than 0")
+    if mode not in {"grayscale", "color"}:
+        raise ValueError("mode must be 'grayscale' or 'color'")
 
-def pixel_to_character(pixel_value: int, charset: str = DEFAULT_CHARSET) -> str:
-    """Map grayscale pixel intensity to an ASCII character."""
-    index = int(pixel_value / 255 * (len(charset) - 1))
-    return charset[index]
+    if isinstance(image, (str, Path)):
+        with Image.open(image) as opened:
+            return image_to_ascii(opened, width, charset, aspect_ratio=aspect_ratio, mode=mode)
 
-def image_to_ascii(image: Image.Image, width: int = 100, charset: str = DEFAULT_CHARSET) -> str:
-    "Convert an image into ASCII art."
-    image = image.convert("L")
-    image = resize_image(image, width)
+    source = ImageOps.exif_transpose(image)
+    if source.width < 1 or source.height < 1:
+        raise ValueError("image must have non-zero dimensions")
+    height = max(1, round(source.height / source.width * width * aspect_ratio))
+    resized = source.resize((width, height), Image.Resampling.LANCZOS)
+    grayscale = resized.convert("L")
+    pixels = list(grayscale.getdata())
+    colors = list(resized.convert("RGB").getdata()) if mode == "color" else None
+    lines: list[str] = []
 
-    pixels = image.load()
-    image_width, image_height = image.size
+    for y in range(height):
+        row: list[str] = []
+        for x in range(width):
+            index = y * width + x
+            shade = pixels[index]
+            char = charset[round((255 - shade) / 255 * (len(charset) - 1))]
+            if colors is not None:
+                red, green, blue = colors[index]
+                row.append(f"\033[38;2;{red};{green};{blue}m{char}\033[0m")
+            else:
+                row.append(char)
+        lines.append("".join(row))
+    return "\n".join(lines)
 
-    lines = []
-
-    for y in range(image_height):
-        line = []
-
-        for x in range(image_width):
-            pixel = pixels[x, y]
-            character = pixel_to_character(pixel, charset)
-            line.append(character)
-
-        lines.append("".join(line))
-
-def convert_image(input_path: str, output_path: str, width: int = 100, charset: str = DEFAULT_CHARSET) -> None:
-    """Convert an image file to an ASCII text file."""
-    image = Image.open(input_path)
-
-    ascii_art = image_to_ascii(image, width, charset)
